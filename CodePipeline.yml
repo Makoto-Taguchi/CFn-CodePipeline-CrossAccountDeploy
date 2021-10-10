@@ -1,0 +1,257 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Create CodePipeline
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Basic Settings.
+        Parameters:
+          - NamePrefix
+      - Label:
+          default: Information About DeployAccount.
+        Parameters:
+          - DeployAccountID
+          - DeployBucketName
+          - CrossAccountRoleName
+Parameters:
+  NamePrefix:
+    Type: String
+    Default: myproject
+  DeployAccountID:
+    Type: String
+  DeployBucketName:
+    Type: String
+    Default: crossaccount-deploy-test
+  CrossAccountRoleName:
+    Type: String
+    Default: prods3role
+  CodePipelineServiceRoleArn:
+    Type: String
+  CodeCommitRepositoryName:
+    Type: String
+    Default: my-Repository
+  CodeCommitBranchName:
+    Type: String
+    Default: main
+
+Resources:
+  # EncryptionKey for CodePipeline Artifact
+  KMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-default-1
+        Statement:
+        - Sid: Enable IAM User Permissions
+          Effect: Allow
+          Principal:
+            AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+          Action: kms:*
+          Resource: '*'
+        - Sid: Enable CodePipeline-ServiceRole to use KMS
+          Effect: Allow
+          Principal:
+            AWS: !Ref CodePipelineServiceRoleArn
+          Action:
+            - kms:Encrypt
+            - kms:Decrypt
+            - kms:ReEncrypt*
+            - kms:GenerateDataKey*
+            - kms:DescribeKey
+          Resource: '*'
+        - Sid: Enable DeployAccount to use KMS
+          Effect: Allow
+          Principal:
+            AWS: !Sub arn:aws:iam::${DeployAccountID}:root
+          Action:
+            - kms:Encrypt
+            - kms:Decrypt
+            - kms:ReEncrypt*
+            - kms:GenerateDataKey*
+            - kms:DescribeKey
+          Resource: '*'
+  KMSAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/${NamePrefix}-KeyforCodePipeline-Artifact
+      TargetKeyId: !Ref KMSKey
+
+  # S3Bucket for CodePipeline Artifact
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${NamePrefix}-codepipeline-artifact
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:PutObject
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource:
+              - !Sub arn:aws:s3:::${ArtifactBucket}
+              - !Sub arn:aws:s3:::${ArtifactBucket}/*
+            Principal:
+              AWS: !Sub arn:aws:iam::${DeployAccountID}:root
+
+  # CodeBuildに適用するIAMRole,Policy
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${NamePrefix}-CodeBuildServiceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service: codebuild.amazonaws.com
+  KMSAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${NamePrefix}-KMSforArtifactBucket-Policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource:
+              - !GetAtt KMSKey.Arn
+      Roles:
+        - !Ref CodeBuildServiceRole
+  CodeBuildBasePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${NamePrefix}-CodeBuildBasePolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource:
+              - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${NamePrefix}-*
+              - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${NamePrefix}-*:*
+          - Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:PutObject
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource:
+              - !Sub arn:aws:s3:::${ArtifactBucket}*
+      Roles:
+        - !Ref CodeBuildServiceRole
+
+  # CodeBuild
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:4.0
+        Type: LINUX_CONTAINER
+      Name: !Sub ${NamePrefix}-BuildProject
+      ServiceRole: !Ref CodeBuildServiceRole
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - apt-get update -y
+                - apt-get install -y yarn
+            pre_build:
+              commands:
+                - yarn
+            build:
+              commands:
+                - mkdir dist
+                - echo "This is test file." > dist/test.txt
+          artifacts:
+            files:
+              - "**/*"
+            discard-paths: no
+            base-directory: dist
+
+  # CodePipeline
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${NamePrefix}-Pipeline
+      RoleArn: !Ref CodePipelineServiceRoleArn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+        EncryptionKey:
+          Id: !GetAtt KMSKey.Arn
+          Type: KMS
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepositoryName
+                BranchName: !Ref CodeCommitBranchName
+              RunOrder: 1
+              OutputArtifacts:
+                - Name: SourceArtifact
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              RunOrder: 1
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+        - Name: Deploy
+          Actions:
+            - Name: Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: S3
+              Configuration:
+                BucketName: !Ref DeployBucketName
+                Extract: true
+              RunOrder: 1
+              InputArtifacts:
+                - Name: BuildArtifact
+              RoleArn: !Sub  arn:aws:iam::${DeployAccountID}:role/${CrossAccountRoleName}

@@ -1,0 +1,69 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Create CodePipeline ServiceRole
+Parameters:
+  NamePrefix:
+    Type: String
+    Default: myproject
+  DeployAccountID:
+    Type: String
+  CrossAccountRoleName:
+    Type: String
+    Default: prods3role
+
+Resources:
+  # CodePipelineに適用するIAMRole
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${NamePrefix}-CodePipelineServiceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+  AssumeRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${NamePrefix}-AssumeProdRolePolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Resource:
+              - !Sub arn:aws:iam::${DeployAccountID}:role/${CrossAccountRoleName}
+      Roles:
+        - !Ref CodePipelineServiceRole
+  CodePipelineBasePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${NamePrefix}-CodePipelineBasePolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - codecommit:GetRepository
+              - codecommit:ListBranches
+              - codecommit:GetUploadArchiveStatus
+              - codecommit:UploadArchive
+              - codecommit:CancelUploadArchive
+              - codebuild:StartBuild
+              - codebuild:StopBuild
+              - codebuild:BatchGet*s
+              - codebuild:Get*
+              - codebuild:List*
+              - codecommit:GetBranch
+              - codecommit:GetCommit
+              - s3:*
+              - iam:PassRole
+            Resource: "*"
+      Roles:
+        - !Ref CodePipelineServiceRole
+
+Outputs:
+  CodePipelineServiceRoleArn:
+    Value: !GetAtt CodePipelineServiceRole.Arn
+

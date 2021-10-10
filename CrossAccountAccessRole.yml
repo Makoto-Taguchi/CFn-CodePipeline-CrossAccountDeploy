@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Create CrossAccountRole which Deploy Stage Use
+Parameters:
+  DeployBucketName:
+    Type: String
+    Default: crossaccount-deploy-test
+  PipelineAccountID:
+    Type: String
+  CodePipelineServiceRoleName:
+    Type: String
+    Default: myproject-CodePipelineServiceRole
+
+Resources:
+  CrossAccountRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: prods3role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${PipelineAccountID}:role/${CodePipelineServiceRoleName}
+            Action: sts:AssumeRole
+  DeployBucketAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: outputbucketfullaccess
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Enable DeployBucket Access in DeployAccount
+          - Effect: Allow
+            Action:
+              - s3:*
+            Resource:
+              - !Sub arn:aws:s3:::${DeployBucketName}/*
+          - Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource:
+              - !Sub arn:aws:s3:::${DeployBucketName}
+      Roles:
+        - !Ref CrossAccountRole
+  KMSAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub devkmss3access
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Enable EncryptionKey Access for ArtifactBucket in PipelineAccount
+          - Effect: Allow
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource:
+              - !Sub arn:aws:kms:ap-northeast-1:${PipelineAccountID}:key/*
+          # Enable ArtifactBucket Access in PipelineAccount
+          - Effect: Allow
+            Action:
+              - s3:Get*
+              - s3:ListBucket
+            Resource:
+              - arn:aws:s3:::*
+      Roles:
+        - !Ref CrossAccountRole
